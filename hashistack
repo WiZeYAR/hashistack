@@ -231,26 +231,6 @@ EOF
 
 _install_nomad() {
     __install_app "nomad"
-
-    if [ "${INSTALL_CNI}" -eq "1" ]; then
-        log "INFO" "Setting up CNI Plugins (v${CNI_VERSION}) for Nomad."
-        curl -fsSL -o /tmp/cni-plugins.tgz "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${OS_ARCH}-v${CNI_VERSION}.tgz"
-        mkdir -p /opt/cni/bin
-
-        log "INFO" "Extracting CNI Plugin."
-        tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
-        rm -f /tmp/cni-plugins.tgz
-
-        log "INFO" "Setting up sysctl for Consul Connect."
-        cat > /etc/sysctl.d/99-consul-connect.conf <<EOF
-net.bridge.bridge-nf-call-arptables = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-EOF
-        log "INFO" "Reloading sysctl configuration."
-        sysctl --system &>/dev/null
-        log "INFO" "Successfully setup CNI Plugins."
-    fi
     log "INFO" "Successfully installed Nomad!"
 }
 
@@ -474,7 +454,7 @@ EOF
                         RETRIES=$((RETRIES+1))
                         sleep 5
                     else
-                        log "ERROR" "Failed to bootstrap VAULT ACL."
+                        log "ERROR" "Failed to bootstrap Vault ACL."
                         log "FATAL" "$BOOTSTRAP_ERR"
                     fi
                 else
@@ -602,6 +582,26 @@ EOF
     j2 /tmp/nomad.hcl.j2 /tmp/nomad-config.json >| ${nomad_config_file}
     chown root:root ${nomad_config_file}
     chmod 0644 ${nomad_config_file}
+
+    if [ "${INSTALL_CNI}" -eq "1" ]; then
+        log "INFO" "Setting up CNI Plugins (v${CNI_VERSION}) for Nomad."
+        curl -fsSL -o /tmp/cni-plugins.tgz "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${OS_ARCH}-v${CNI_VERSION}.tgz"
+        mkdir -p /opt/cni/bin
+
+        log "INFO" "Extracting CNI Plugin."
+        tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
+        rm -f /tmp/cni-plugins.tgz
+
+        log "INFO" "Setting up sysctl for Consul Connect."
+        cat > /etc/sysctl.d/99-consul-connect.conf <<EOF
+net.bridge.bridge-nf-call-arptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+        log "INFO" "Reloading sysctl configuration."
+        sysctl --system &>/dev/null
+        log "INFO" "Successfully setup CNI Plugins."
+    fi
 
     log "DEBUG" "Restarting Nomad systemd service."
     if ! systemctl restart nomad 2>/tmp/hashistack-err; then
