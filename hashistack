@@ -464,7 +464,7 @@ EOF
             log "INFO" "No --generate-root-token defined. Skipping root token generation."
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "INFO" "No Vault root token found. Attempting to generate."
-            export VAULT_ADDR="http://${VAULT_BIND_ADDR}:8200"
+            export VAULT_ADDR="http://${VAULT_BIND_ADDRESS}:8200"
             if ! VAULT_ROOT=$(vault operator init 2>/tmp/hashistack-err); then
                 log "ERROR" "Failed to generate Vault root token."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
