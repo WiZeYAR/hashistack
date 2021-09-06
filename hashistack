@@ -462,7 +462,7 @@ EOF
     if [ "$BOOTSTRAP" -eq "1" ]; then
         if [ "$GEN_ROOT_TOKEN" -eq "0" ]; then
             log "INFO" "No --generate-root-token defined. Skipping root token generation."
-        elif [ -z "${VAULT_ROOT_TOKEN:x}" ]; then
+        elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "INFO" "No Vault root token found. Attempting to generate."
             export VAULT_ADDR="http://${VAULT_BIND_ADDR}:8200"
             if ! VAULT_ROOT=$(vault operator init 2>/tmp/hashistack-err); then
