@@ -172,8 +172,14 @@ detect_architecture() {
 
 add_repository() {
     log "INFO" "Setting up Hashicorp apt repository."
-    curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
-    apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+    if ! curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add - 1>/dev/null 2>/tmp/hashistack-err; then
+        log "ERROR" "Failed to import Hashicorp apt repository GPG."
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+    if ! apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main" 1>/dev/null 2>/tmp/hashistack-err; then
+        log "ERROR" "Failed to add Hashicorp apt repository."
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
     log "INFO" "Running apt update."
     apt update &>/dev/null
     log "INFO" "Done!"
@@ -184,7 +190,7 @@ compare_version() {
 }
 
 check_connection() {
-    [ "$(lsof -i :"$1" -S)" -eq "0" ] && return 0 || return 1
+    lsof -i :"$1" -S &>/dev/null && return
 }
 
 __install_app() {
@@ -203,7 +209,7 @@ __install_app() {
 
     if [ "$SKIPINSTALL" -eq 0 ]; then
         log "INFO" "Newer version of ${1} is defined in the script. Installing."
-        if ! apt install "${1}==${!APPVER}" 2>/tmp/hashistack-err; then
+        if ! apt install "${1}=${!APPVER}" 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
     fi
@@ -262,7 +268,7 @@ __generate_consul_configuration() {
 {
     "datacenter": "${DATACENTER}",
     "consul_instance": "${MODE}",
-    "bootstrap_expect": "${BOOTSTRAP_EXPECT:1}",
+    "bootstrap_expect": "${BOOTSTRAP_EXPECT:-1}",
     "net_interface": "${NET_IFACE}",
     "retry_join": "${RETRY_JOIN:-}",
     "encryption_token": "${CONSUL_ENCRYPT_TOKEN}",
@@ -316,7 +322,7 @@ _configure_consul() {
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
         log "DEBUG" "Restarted Consul systemd service."
-        if ! check_connection "8500"; then
+        if check_connection "8500"; then
             log "FATAL" "Consul service is not up. Exiting."
         fi
         log "INFO" "Consul service is up."
@@ -326,19 +332,33 @@ _configure_consul() {
         log "DEBUG" "Consul is running on: ${CONSUL_HTTP_ADDR}."
 
         log "INFO" "Bootstrapping Consul ACL"
-        if ! BOOTSTRAP_TOKEN=$(consul acl bootstrap 2>/tmp/hashistack-err); then
-            log "ERROR" "Failed to bootstrap Consul ACL."
-            log "FATAL" "$(cat /tmp/hashistack-err)"
-        fi
+
+        RETRIES=0
+        while [ "$RETRIES" -le "5" ]; do
+            if ! BOOTSTRAP_TOKEN=$(consul acl bootstrap 2>/tmp/hashistack-err); then
+                BOOTSTRAP_ERR=$(cat /tmp/hashistack-err)
+                if [[ "$BOOTSTRAP_ERR" == *"legacy mode."* ]]; then
+                    log "DEBUG" "Waiting for Consul ACL to start."
+                    RETRIES=$((RETRIES+1))
+                    sleep 5
+                else
+                    log "ERROR" "Failed to bootstrap Consul ACL."
+                    log "FATAL" "$BOOTSTRAP_ERR"
+                fi
+            else
+                break
+            fi
+        done
+
         CONSUL_MASTER_TOKEN=$(echo -e "${BOOTSTRAP_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
         log "INFO" "Generated Consul ACL Master token."
         log "DEBUG" "Consul ACL Master token: ${CONSUL_MASTER_TOKEN}."
 
         log "INFO" "Checking if Consul DNS ACL policy exists."
-        if ! consul acl policy read -name dns-policy -token="${CONSUL_MASTER_TOKEN}"; then
+        if ! consul acl policy read -name dns-policy -token="${CONSUL_MASTER_TOKEN}" &>/dev/null; then
             log "INFO" "Consul DNS ACL policy does not exist. Creating."
             curl -fsSL -o /tmp/consul-dns-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-dns-policy.hcl"
-            if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=dns-policy -rules @consul-dns-policy.hcl 2>/tmp/hashistack-err); then
+            if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=dns-policy -rules @consul-dns-policy.hcl 1>/dev/null 2>/tmp/hashistack-err); then
                 log "ERROR" "Failed to create Consul DNS ACL policy."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
             fi
@@ -367,7 +387,7 @@ _configure_consul() {
 
 _configure_vault() {
     if [ "$BOOTSTRAP" -eq "1" ]; then
-        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && check_connection "8500"; then
             log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
         elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
             log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Vault ACL."
@@ -433,7 +453,7 @@ EOF
         log "FATAL" "$(cat /tmp/hashistack-err)"
     fi
     log "DEBUG" "Restarted Vault systemd service."
-    if ! check_connection "8200"; then
+    if check_connection "8200"; then
         log "FATAL" "Vault service is not up. Exiting."
     fi
     log "INFO" "Vault service is up."
@@ -459,7 +479,7 @@ EOF
 
 _configure_nomad() {
     if [ "$BOOTSTRAP" -eq "1" ]; then
-        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && check_connection "8500"; then
             log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
         elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
             log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Nomad ACL."
@@ -493,7 +513,7 @@ _configure_nomad() {
             log "DEBUG" "Consul ACL Nomad token: ${CONSUL_NOMAD_TOKEN}."
         fi
 
-        if [ -z "${VAULT_ADDRESS+x}" ] && ! check_connection "8200"; then
+        if [ -z "${VAULT_ADDRESS+x}" ] && check_connection "8200"; then
             log "ERROR" "Vault service is not up. Cannot bootstrap without Vault."
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "ERROR" "Vault root token is not defined. Cannot bootstrap Nomad Vault token."
@@ -573,14 +593,14 @@ EOF
         log "FATAL" "$(cat /tmp/hashistack-err)"
     fi
     log "DEBUG" "Restarted Nomad systemd service."
-    if ! check_connection "4646"; then
+    if check_connection "4646"; then
         log "FATAL" "Nomad service is not up. Exiting."
     fi
     log "INFO" "Nomad service is up."
 }
 
 _configure_resolved() {
-    if ! check_connection "8500"; then
+    if check_connection "8500"; then
         log "ERROR" "Consul service is not up. No point configuring systemd-resolved."
     else
         log "INFO" "Configuring systemd-resolved."
@@ -601,9 +621,6 @@ setup() {
     case "${1}" in
         'install'|'configure')
             ACTION="${1}"
-            ;;
-        'help')
-            usage
             ;;
         *)
             log "FATAL" "Undefined argument: ${1}. For help, run '${executable} help'."
@@ -776,7 +793,7 @@ consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
 
 log "DEBUG" "Running $executable from $curdir"
 
-if [ $# -eq 0 ]; then
+if [ $# -eq 0 ] || [ "$1" = "help" ]; then
     usage
 fi
 
