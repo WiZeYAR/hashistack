@@ -68,9 +68,11 @@ ${YELLOW}Vault:${NOFMT}
 
 setup_colors() {
   if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
-    NOFMT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' BLUE='\033[1;34m'
+    NOFMT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m'
+    YELLOW='\033[1;33m' BLUE='\033[1;34m' CYAN='\033[0;36m'
   else
-    NOFMT='' RED='' GREEN='' YELLOW='' BLUE=''
+    NOFMT='' RED='' GREEN=''
+    YELLOW='' BLUE='' CYAN=''
   fi
 }
 setup_colors
@@ -80,7 +82,8 @@ _msg () {
     local type="$2" log="$3"
 
     if [ "$verbose" -eq "1" ]; then
-        printf "%21s %-25s %-6b %b\n" "[$(date +"%F %T")]" "[${stack[1]}:${stack[0]}]" "${type}:" "${log}" >&2
+        STACKFMT="${CYAN}[${stack[1]}:${stack[0]}]${NOFMT}"
+        printf "%21s %-6b %b %b\n" "[$(date +"%F %T")]" "${type}" "${STACKFMT}" "${log}" >&2
     else
         printf "%21s %-6b %b\n" "[$(date +"%F %T")]" "${type}:" "${log}" >&2
     fi
