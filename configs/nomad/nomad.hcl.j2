@@ -1,0 +1,62 @@
+data_dir   = "/opt/nomad/data"
+bind_addr  = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+datacenter = "{{ datacenter }}"
+
+acl {
+  enabled = true
+}
+
+advertise {
+  http = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+  rpc  = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+  serf = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+}
+
+consul {
+  token   = "{{ consul_token }}"
+  address = "{{ consul_bind_address }}:8500"
+}
+
+{% if nomad_instance == 'server' %}
+server {
+  enabled = true
+  bootstrap_expect = {{ bootstrap_expect }}
+  encrypt = "{{ encryption_token }}"
+}
+{% else %}
+client {
+  enabled = true
+}
+
+plugin "docker" {
+  config {
+    auth {
+      config = "/etc/docker/config.json"
+      helper = "ecr-login"
+    }
+    allow_privileged = true
+    volumes {
+      enabled = true
+    }
+  }
+}
+{% endif %}
+
+server_join {
+  retry_join = ["{{ retry_join }}"]
+}
+
+telemetry {
+  collection_interval = "15s"
+  disable_hostname = true
+  prometheus_metrics = true
+  publish_allocation_metrics = true
+  publish_node_metrics = true
+}
+
+vault {
+  enabled = true
+  address = "{{ vault_addr }}"
+  create_from_role = "nomad-cluster"
+  token = "{{ vault_token }}"
+}

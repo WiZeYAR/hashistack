@@ -1,0 +1,793 @@
+#! /usr/bin/env bash
+
+# vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4
+set -Eeuo pipefail
+
+curdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
+debug=${DEBUG:-0}
+executable="$(basename "${BASH_SOURCE[0]}")"
+readonly curdir debug executable
+
+# Variables
+CONSUL_VERSION=${CONSUL_VERSION:-"1.10.2"}
+NOMAD_VERSION=${NOMAD_VERSION:-"1.1.4"}
+VAULT_VERSION=${VAULT_VERSION:-"1.8.2"}
+CNI_VERSION=${CNI_VERSION:-"1.0.0"}
+
+# Constants
+consul_systemd_dir="/etc/systemd/system/consul.service.d"
+consul_config_dir="/etc/consul.d"
+consul_config_file="${consul_config_dir}/consul.hcl"
+nomad_config_dir="/etc/nomad.d"
+nomad_config_file="${nomad_config_dir}/nomad.hcl"
+vault_config_dir="/etc/vault.d"
+vault_config_file="${vault_config_dir}/vault.hcl"
+
+usage() {
+    echo -e "
+Usage: ${executable} ${GREEN}[install | configure | help]${NOFMT} ${YELLOW}[consul | nomad | vault]${NOFMT} <params>
+
+${GREEN}install:${NOFMT}   Installs the specifed hashistack application.
+${GREEN}configure:${NOFMT} Configures the specifed hashistack application.
+${GREEN}help:${NOFMT}      Show this dialogue and exit.
+
+Parameters (Configure):
+
+${RED}Common (Required by ${GREEN}install${RED}):${NOFMT}
+--bootstrap-expect=<int>    Number of servers to expect. Ignored if --mode is not set to server.
+--datacenter=<string>       Datacenter to configure the hashistack application in.
+--install-cni               Whether the Nomad CNI plugin needs to be installed. Only for installing Nomad, ignored otherwise.
+--mode=[server|client] Set up the current instance in Server or Client mode. Consul can only be set up in server or client mode. This option is ignored by Vault.
+--net-interface=<interface> Network Interface name to use for Consul/Nomad go-socketaddr. If not specified, the default interface is used.
+--retry-join=<string>       go-discover compatible string for list of servers to join.
+--consul-address            Consul Address if not installed on the server. If not specified, --net-interface or default interface is used.
+--vault-address             Vault Address if not installed on the server. If not specified, --net-interface or default interface is used.
+
+In addition to the common parameters, the following parameters are required by ${GREEN}configure${NOFMT}:
+
+${YELLOW}Consul:${NOFMT}
+--bootstrap                 Uses the current Consul instance as a bootstrap server. Sets up encryption token and ACLs unless overridden.
+--consul-encryption-token   Encryption token for Consul RAFT protocol.
+--consul-master-token       Master ACL token for Consul. Ignored by --bootstrap.
+--consul-default-token      Default ACL token for Consul DNS. Ignored by --bootstrap.
+
+${YELLOW}Nomad:${NOFMT}
+--consul-nomad-token        Nomad token for Consul ACL. Generated during configure if not specified (Requires --consul-master-token).
+--nomad-encryption-token    Encryption token for Nomad RAFT protocol. Generated during configure if not specified.
+--nomad-vault-token         Nomad token for Vault ACL. Generated during configure if not specified (Requires --vault-root-token).
+--vault-root-token          Required if --nomad-vault-token is not specified during Nomad configure.
+
+${YELLOW}Vault:${NOFMT}
+--consul-vault-token        Vault token for Consul ACL. Generated during configure if not specified (Requires --consul-master-token).
+--generate-root-token       Whether Vault root token needs to be generated.
+--vault-kms-key             AWS KMS Key ID for Vault.
+"
+    exit 0
+}
+
+setup_colors() {
+  if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
+    NOFMT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m'
+  else
+    NOFMT='' RED='' GREEN='' YELLOW=''
+  fi
+}
+setup_colors
+
+_msg () {
+    IFS=" " read -r -a stack <<< "$(caller "$1")"
+    local type="$2"
+    local log="$3"
+
+    echo -e "[$(date +"%F %T")] [${stack[1]}:${stack[0]}] ${type}: ${log}" >&2
+}
+
+log() {
+    local msg="${*:2}"
+
+    case "${1^^}" in
+        'DEBUG')
+            if [ "${debug}" -ne "0" ]; then
+                _msg 1 "${GREEN}$1${NOFMT}" "${msg}"
+            fi
+            ;;
+        'INFO')
+            _msg 1 "$1" "${msg}"
+            ;;
+        'WARN')
+            _msg 1 "${YELLOW}$1${NOFMT}" "${msg}"
+            ;;
+        'ERROR')
+            _msg 1 "${RED}$1${NOFMT}" "${msg}"
+            ;;
+        'FATAL')
+            _msg 1 "${RED}$1${NOFMT}" "${msg}"
+            exit 1
+            ;;
+        *)
+            _msg 1 "INFO" "$msg"
+    esac
+}
+
+check_root() {
+    log "DEBUG" "Checking for root access."
+    if [ "$EUID" -ne "0" ]; then
+        log "FATAL" "Please run the script as root. Exiting."
+    fi
+    log "DEBUG" "The script is running as root."
+    return 0
+}
+
+check_system() {
+    log "DEBUG" "Checking if the script is running on Ubuntu with systemd."
+    if ! command -v apt &>/dev/null; then
+        log "FATAL" "The script can only run on Ubuntu. Exiting."
+    elif [ ! -d '/run/systemd/system' ]; then
+        log "FATAL" "No systemd found. Exiting."
+    fi
+    log "DEBUG" "The script is running on Ubuntu with systemd."
+
+    log "DEBUG" "Checking if other required packages are installed."
+    if ! command -v getopt &>/dev/null; then
+        log "FATAL" "Package 'util-linux' is not installed. Exiting."
+    fi
+    log "DEBUG" "Package 'util-linux' detected."
+
+    export PATH=$PATH:$HOME/.local/bin
+    if ! command -v j2 &>/dev/null; then
+        log "DEBUG" "No jinja2-cli found in PATH: ${PATH}."
+        log "WARN" "Package jinja2-cli is not installed. Installing with pip."
+        if ! command -v pip3 &>/dev/null; then
+            log "FATAL" "Package python3-pip is not installed."
+        fi
+        if ! pip3 install --user --upgrade j2cli 2>/tmp/hashistack-err; then
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        if ! command -v j2 &>/dev/null; then
+            log "FATAL" "Failed to detect jinja2-cli after installation. Exiting."
+        else
+            log "INFO" "Successfully installed jinja2-cli."
+        fi
+    fi
+    log "DEBUG" "Package 'jinja2-cli' detected."
+
+    return 0
+}
+
+detect_architecture() {
+    case "$(uname -m)" in
+        'x86_64')
+            OS_ARCH="amd64"
+            ;;
+        'aarch64')
+            OS_ARCH="arm64"
+            ;;
+        *)
+            log "FATAL" "Unsupported architecture: $(uname -m). Exiting."
+            ;;
+    esac
+    log "DEBUG" "Detected Architecture: ${OS_ARCH} is supported."
+    return 0
+}
+
+add_repository() {
+    log "INFO" "Setting up Hashicorp apt repository."
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
+    apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+    log "INFO" "Running apt update."
+    apt update &>/dev/null
+    log "INFO" "Done!"
+}
+
+compare_version() {
+    [ "$1" = "$(echo -e "$1\n$2" | sort -V | head -n1)" ] && return 1 || return 0
+}
+
+check_connection() {
+    [ "$(lsof -i :"$1" -S)" -eq "0" ] && return 0 || return 1
+}
+
+__install_app() {
+    local SKIPINSTALL=0
+    local APPVER="${1^^}_VERSION"
+    log "DEBUG" "Script ${1} version: ${!APPVER}"
+    if command -v "${1}" &>/dev/null; then
+        log "INFO" "${1} is already installed. Will try to upgrade."
+        CURVER=$(${1} --version | grep -Po '\d+.\d+.\d+')
+        log "DEBUG" "Installed ${1} version: ${CURVER}."
+        if ! (compare_version "${!APPVER}" "$CURVER"); then
+            log "INFO" "Latest ${1} is already installed (v${CURVER}). Skipping."
+            SKIPINSTALL=1
+        fi
+    fi
+
+    if [ "$SKIPINSTALL" -eq 0 ]; then
+        log "INFO" "Newer version of ${1} is defined in the script. Installing."
+        if ! apt install "${1}==${!APPVER}" 2>/tmp/hashistack-err; then
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+    fi
+}
+
+_install_consul() {
+    __install_app "consul"
+
+    log "INFO" "Setting up Consul systemd service override."
+    mkdir -p "${consul_systemd_dir}"
+    cat > ${consul_systemd_dir}/override.conf <<EOF
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+EOF
+    log "INFO" "Reloading systemd-daemon."
+    systemctl daemon-reload
+    log "INFO" "Successfully installed Consul!"
+}
+
+_install_nomad() {
+    __install_app "nomad"
+
+    if [ "${INSTALL_CNI}" -eq "1" ]; then
+        log "INFO" "Setting up CNI Plugins (v${CNI_VERSION}) for Nomad."
+        curl -fsSL -o /tmp/cni-plugins.tgz "https://github.com/containernetworking/plugins/releases/download/v${CNI_VERSION}/cni-plugins-linux-${OS_ARCH}-v${CNI_VERSION}.tgz"
+        mkdir -p /opt/cni/bin
+
+        log "INFO" "Extracting CNI Plugin."
+        tar -C /opt/cni/bin -xzf /tmp/cni-plugins.tgz
+        rm -f /tmp/cni-plugins.tgz
+
+        log "INFO" "Setting up sysctl for Consul Connect."
+        cat > /etc/sysctl.d/99-consul-connect.conf <<EOF
+net.bridge.bridge-nf-call-arptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+        log "INFO" "Reloading sysctl configuration."
+        sysctl --system &>/dev/null
+        log "INFO" "Successfully setup CNI Plugins."
+    fi
+    log "INFO" "Successfully installed Nomad!"
+}
+
+_install_vault() {
+    __install_app "vault"
+    log "INFO" "Successfully installed Vault!"
+}
+
+__generate_consul_configuration() {
+    log "INFO" "Downloading Consul configuration template."
+    # TODO: setup consul configuration URL
+    curl -fsSL -o /tmp/consul.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul.hcl.j2"
+    log "INFO" "Done. Generating template."
+
+    cat > /tmp/consul-config.json <<EOF
+{
+    "datacenter": "${DATACENTER}",
+    "consul_instance": "${MODE}",
+    "bootstrap_expect": "${BOOTSTRAP_EXPECT:1}",
+    "net_interface": "${NET_IFACE}",
+    "retry_join": "${RETRY_JOIN:-}",
+    "encryption_token": "${CONSUL_ENCRYPT_TOKEN}",
+    "master_acl_token": "${CONSUL_MASTER_TOKEN:-}",
+    "default_acl_token": "${CONSUL_DEFAULT_TOKEN:-}"
+}
+EOF
+
+    log "DEBUG" "Template Parameters:\n$(cat /tmp/consul-config.json)"
+
+    mkdir -p ${consul_config_dir}
+    j2 /tmp/consul.hcl.j2 /tmp/consul-config.json >| ${consul_config_file}
+    chown consul:consul ${consul_config_file}
+    chmod 0644 ${consul_config_file}
+
+    log "INFO" "Validating Consul configuration: ${consul_config_file}"
+    if ! consul validate ${consul_config_file}; then
+        log "FATAL" "Failed to validate Consul configuration. Exiting."
+    fi
+    log "INFO" "Consul configuration is valid."
+    return 0
+}
+
+_configure_consul() {
+    if [ -z "${BOOTSTRAP_EXPECT+x}" ]; then
+        log "WARN" "No value set for --bootstrap-expect, defaulting to 1."
+    fi
+
+    if [ -z "${CONSUL_ENCRYPT_TOKEN+x}" ]; then
+        log "WARN" "No Consul encryption token passed. Generating a new token."
+        if ! CONSUL_ENCRYPT_TOKEN=$(consul keygen 2>/tmp/hashistack-err); then
+            log "ERROR" "Failed to generate consul encryption token. Generate manually by running consul keygen."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+    fi
+
+    if [ "$BOOTSTRAP" -eq "0" ]; then
+        if [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
+            log "WARN" "No Consul ACL Master token defined."
+        fi
+        if [ -z "${CONSUL_DEFAULT_TOKEN+x}" ]; then
+            log "WARN" "No Consul ACL Default token defined."
+        fi
+    fi
+    __generate_consul_configuration
+
+    if [ "$BOOTSTRAP" -eq "1" ]; then
+        log "INFO" "Bootstrap enabled. Will configure encryption token and ACLs."
+        log "DEBUG" "Restarting Consul systemd service."
+        if ! systemctl restart consul 2>/tmp/hashistack-err; then
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        log "DEBUG" "Restarted Consul systemd service."
+        if ! check_connection "8500"; then
+            log "FATAL" "Consul service is not up. Exiting."
+        fi
+        log "INFO" "Consul service is up."
+
+        CONSUL_HTTP_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8500"
+        export CONSUL_HTTP_ADDR
+        log "DEBUG" "Consul is running on: ${CONSUL_HTTP_ADDR}."
+
+        log "INFO" "Bootstrapping Consul ACL"
+        if ! BOOTSTRAP_TOKEN=$(consul acl bootstrap 2>/tmp/hashistack-err); then
+            log "ERROR" "Failed to bootstrap Consul ACL."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        CONSUL_MASTER_TOKEN=$(echo -e "${BOOTSTRAP_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+        log "INFO" "Generated Consul ACL Master token."
+        log "DEBUG" "Consul ACL Master token: ${CONSUL_MASTER_TOKEN}."
+
+        log "INFO" "Checking if Consul DNS ACL policy exists."
+        if ! consul acl policy read -name dns-policy -token="${CONSUL_MASTER_TOKEN}"; then
+            log "INFO" "Consul DNS ACL policy does not exist. Creating."
+            # TODO: Replace URL
+            curl -fsSL -o /tmp/consul-dns-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-dns-policy.hcl"
+            if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=dns-policy -rules @consul-dns-policy.hcl 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to create Consul DNS ACL policy."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            log "INFO" "Created Consul DNS ACL policy."
+        fi
+
+        log "INFO" "Generating Consul ACL Default token."
+        if ! DEFAULT_TOKEN=$(consul acl token create -token="${CONSUL_MASTER_TOKEN}" -policy-name=dns-policy 2>/tmp/hashistack-err); then
+            log "ERROR" "Failed to generate Consul ACL Default token."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        CONSUL_DEFAULT_TOKEN=$(echo -e "${DEFAULT_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+        log "INFO" "Generated Consul ACL Default token."
+        log "DEBUG" "Consul ACL Default token: ${CONSUL_DEFAULT_TOKEN}."
+
+        log "INFO" "Regenerating Consul Configuration with ACL."
+        __generate_consul_configuration
+    fi
+
+    if [ -n "${CONSUL_MASTER_TOKEN+x}" ] && [ -n "${CONSUL_DEFAULT_TOKEN+x}" ]; then
+        log "INFO" "Consul ACL tokens:"
+        echo -e "${GREEN}Consul Master ACL Token:${NOFMT}  ${CONSUL_MASTER_TOKEN}"
+        echo -e "${GREEN}Consul Default ACL Token:${NOFMT} ${CONSUL_DEFAULT_TOKEN}"
+    fi
+}
+
+_configure_vault() {
+    if [ "$BOOTSTRAP" -eq "1" ]; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
+            log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
+        elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
+            log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Vault ACL."
+        else
+            log "INFO" "Consul service is up. Bootstrapping Consul Vault ACL Token."
+            if [ -n "${CONSUL_ADDRESS+x}" ] && [[ "${CONSUL_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                CONSUL_HTTP_ADDR="${CONSUL_ADDRESS}"
+            else
+                CONSUL_HTTP_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8500"
+            fi
+            export CONSUL_HTTP_ADDR
+
+            log "INFO" "Checking if Consul Vault ACL policy exists."
+            if ! consul acl policy read -name vault-policy -token="${CONSUL_MASTER_TOKEN}"; then
+                log "INFO" "Consul Vault ACL policy does not exist. Creating."
+                # TODO: Replace URL
+                curl -fsSL -o /tmp/consul-vault-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-vault-policy.hcl"
+                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=vault-policy -rules @consul-vault-policy.hcl 2>/tmp/hashistack-err); then
+                    log "ERROR" "Failed to create Consul Vault ACL policy."
+                    log "FATAL" "$(cat /tmp/hashistack-err)"
+                fi
+                log "INFO" "Created Consul Vault ACL policy."
+            fi
+
+            log "INFO" "Generating Consul ACL Vault token."
+            if ! VAULT_TOKEN=$(consul acl token create -token="${CONSUL_MASTER_TOKEN}" -policy-name=vault-policy 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to generate Consul ACL Vault token."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            CONSUL_VAULT_TOKEN=$(echo -e "${VAULT_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+            log "INFO" "Generated Consul ACL Vault token."
+            log "DEBUG" "Consul ACL Vault token: ${CONSUL_VAULT_TOKEN}."
+        fi
+    fi
+
+    if [ -z "${CONSUL_VAULT_TOKEN+x}" ]; then
+        log "WARN" "Consul Vault ACL token is not defined."
+    fi
+    if [ -z "${VAULT_KMS_KEY+x}" ]; then
+        log "WARN" "Vault AWS KMS key is not defined."
+    fi
+
+    VAULT_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
+    # TODO: setup vault configuration URL
+    curl -fsSL -o /tmp/vault.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/vault/vault.hcl.j2"
+    log "INFO" "Done. Generating template."
+
+    cat > /tmp/vault-config.json <<EOF
+{
+    "bind_address": "${VAULT_BIND_ADDRESS}",
+    "consul_vault_token": "${CONSUL_VAULT_TOKEN:-}",
+    "kms_key_id": "${VAULT_KMS_KEY:-}"
+}
+EOF
+
+    log "DEBUG" "Template Parameters:\n$(cat /tmp/vault-config.json)"
+
+    mkdir -p "${vault_config_dir}"
+    j2 /tmp/vault.hcl.j2 /tmp/vault-config.json >| "${vault_config_file}"
+    chown vault:vault "${vault_config_file}"
+    chmod 0644 "${vault_config_file}"
+
+    log "DEBUG" "Restarting Vault systemd service."
+    if ! systemctl restart vault 2>/tmp/hashistack-err; then
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+    log "DEBUG" "Restarted Vault systemd service."
+    if ! check_connection "8200"; then
+        log "FATAL" "Vault service is not up. Exiting."
+    fi
+    log "INFO" "Vault service is up."
+
+    if [ "$BOOTSTRAP" -eq "1" ]; then
+        if [ "$GEN_ROOT_TOKEN" -eq "0" ]; then
+            log "INFO" "No --generate-root-token defined. Skipping root token generation."
+        elif [ -z "${VAULT_ROOT_TOKEN:x}" ]; then
+            log "INFO" "No Vault root token found. Attempting to generate."
+            export VAULT_ADDR="http://${VAULT_BIND_ADDR}:8200"
+            if ! VAULT_ROOT=$(vault operator init 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to generate Vault root token."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+        fi
+    fi
+
+    if [ -n "${VAULT_ROOT}" ]; then
+        log "INFO" "Bootstrapped Vault instance:"
+        echo -e "${VAULT_ROOT}"
+    fi
+}
+
+_configure_nomad() {
+    if [ "$BOOTSTRAP" -eq "1" ]; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
+            log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
+        elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
+            log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Nomad ACL."
+        else
+            log "INFO" "Consul service is up. Bootstrapping Consul Nomad ACL Token."
+            if [ -n "${CONSUL_ADDRESS+x}" ] && [[ "${CONSUL_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                CONSUL_HTTP_ADDR="${CONSUL_ADDRESS}"
+            else
+                CONSUL_HTTP_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8500"
+            fi
+            export CONSUL_HTTP_ADDR
+
+            log "INFO" "Checking if Consul Nomad ACL policy exists."
+            if ! consul acl policy read -name nomad-policy -token="${CONSUL_MASTER_TOKEN}"; then
+                log "INFO" "Consul Nomad ACL policy does not exist. Creating."
+                # TODO: Replace URL
+                curl -fsSL -o /tmp/consul-nomad-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-nomad-policy.hcl"
+                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=nomad-policy -rules @consul-nomad-policy.hcl 2>/tmp/hashistack-err); then
+                    log "ERROR" "Failed to create Consul Nomad ACL policy."
+                    log "FATAL" "$(cat /tmp/hashistack-err)"
+                fi
+                log "INFO" "Created Consul Nomad ACL policy."
+            fi
+
+            log "INFO" "Generating Consul ACL Nomad token."
+            if ! NOMAD_TOKEN=$(consul acl token create -token="${CONSUL_MASTER_TOKEN}" -policy-name=nomad-policy 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to generate Consul ACL Nomad token."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            CONSUL_NOMAD_TOKEN=$(echo -e "${NOMAD_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+            log "INFO" "Generated Consul ACL Nomad token."
+            log "DEBUG" "Consul ACL Nomad token: ${CONSUL_NOMAD_TOKEN}."
+        fi
+
+        if [ -z "${VAULT_ADDRESS+x}" ] && ! check_connection "8200"; then
+            log "ERROR" "Vault service is not up. Cannot bootstrap without Vault."
+        elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
+            log "ERROR" "Vault root token is not defined. Cannot bootstrap Nomad Vault token."
+        elif [ -n "${NOMAD_VAULT_TOKEN}" ]; then
+            log "INFO" "Nomad Vault token already defined. Skipping Vault bootstrap."
+        else
+            log "INFO" "Vault service is up. Bootstrapping Nomad Vault token."
+            if [ -n "${VAULT_ADDRESS}" ] && [[ "${VAULT_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                VAULT_ADDR="${VAULT_ADDRESS}:8200"
+            else
+                VAULT_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8200"
+            fi
+            export VAULT_ADDR
+            export VAULT_TOKEN="${VAULT_ROOT_TOKEN}"
+
+            log "INFO" "Creating Vault Nomad Policy."
+            curl -fsSL https://nomadproject.io/data/vault/nomad-server-policy.hcl -o /tmp/nomad-server-policy.hcl
+            curl -fsSL https://nomadproject.io/data/vault/nomad-cluster-role.json -o /tmp/nomad-cluster-role.json
+            if ! (cd /tmp && vault policy write nomad-server nomad-server-policy.hcl 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to create Vault Nomad Policy."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            if ! (cd /tmp && vault write /auth/token/roles/nomad-cluster @nomad-cluster-role.json 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to create Nomad Vault Role."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            log "INFO" "Created Vault Nomad Policy."
+
+            log "INFO" "Generating Vault Nomad token."
+            if ! VNOMAD_TOKEN=$(vault token create -policy nomad-server -period 72h -orphan 2>/tmp/hashistack-err); then
+                log "ERROR" "Failed to generate Vault Nomad token."
+                log "FATAL" "$(cat /tmp/hashistack-err)"
+            fi
+            NOMAD_VAULT_TOKEN=$(echo -e "${VNOMAD_TOKEN}" | grep "^token \s*" | awk -F ' ' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+            log "INFO" "Generated Vault Nomad token."
+            log "DEBUG" "Vault Nomad token: ${NOMAD_VAULT_TOKEN}"
+        fi
+    fi
+
+    if [ "$MODE" = "client" ] && ! command -v docker &>/dev/null; then
+        log "WARN" "Nomad is being set up in client mode, but docker is not installed."
+    fi
+
+    if ! NOMAD_ENCRYPT_TOKEN=$(nomad operator keygen 2>/tmp/hashistack-err); then
+        log "ERROR" "Failed to generate nomad encryption token. Generate manually by running nomad operator keygen."
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+
+    CONSUL_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
+
+    # TODO: setup nomad configuration URL
+    curl -fsSL -o /tmp/nomad.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/nomad/nomad.hcl.j2"
+
+    cat > /tmp/nomad-config.json <<EOF
+{
+    "net_interface": "${NET_IFACE}",
+    "datacenter": "${DATACENTER}",
+    "consul_token": "${CONSUL_NOMAD_TOKEN}",
+    "consul_bind_address": "${CONSUL_ADDRESS:-$CONSUL_BIND_ADDRESS}",
+    "nomad_instance": "${MODE}",
+    "bootstrap_expect": "${BOOTSTRAP_EXPECT}",
+    "encryption_token": "${NOMAD_ENCRYPT_TOKEN}",
+    "vault_token": "${NOMAD_VAULT_TOKEN:-}",
+    "retry_join": "${RETRY_JOIN}",
+    "vault_addr": "${VAULT_ADDR}"
+}
+EOF
+
+    log "DEBUG" "Template Parameters:\n$(cat /tmp/nomad-config.json)"
+
+    mkdir -p ${nomad_config_dir}
+    j2 /tmp/nomad.hcl.j2 /tmp/nomad-config.json >| ${nomad_config_file}
+    chown root:root ${nomad_config_file}
+    chmod 0644 ${nomad_config_file}
+
+    log "DEBUG" "Restarting Nomad systemd service."
+    if ! systemctl restart nomad 2>/tmp/hashistack-err; then
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+    log "DEBUG" "Restarted Nomad systemd service."
+    if ! check_connection "4646"; then
+        log "FATAL" "Nomad service is not up. Exiting."
+    fi
+    log "INFO" "Nomad service is up."
+}
+
+_configure_resolved() {
+    if ! check_connection "8500"; then
+        log "ERROR" "Consul service is not up. No point configuring systemd-resolved."
+    else
+        log "INFO" "Configuring systemd-resolved."
+        BIND_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
+        log "DEBUG" "Setting up systemd-resolved DNS on IP: ${BIND_ADDR}."
+        cat > /etc/systemd/resolved.conf <<EOF
+[Resolve]
+DNS=${BIND_ADDR}
+Domains=~consul
+EOF
+        log "INFO" "Configured systemd-resolved."
+    fi
+}
+
+setup() {
+    log "DEBUG" "Parsing Arguments."
+
+    case "${1}" in
+        'install'|'configure')
+            ACTION="${1}"
+            ;;
+        'help')
+            usage
+            ;;
+        *)
+            log "FATAL" "Undefined argument: ${1}. For help, run '${executable} help'."
+            ;;
+    esac
+
+    case "${2}" in
+        'consul'|'nomad'|'vault')
+            HASHI_APP="${2}"
+            ;;
+        *)
+            log "FATAL" "Undefined argument: ${2}. Valid options are: consul, nomad, vault."
+            ;;
+    esac
+
+    if [ "$ACTION" = "install" ]; then
+        log "INFO" "Installing ${HASHI_APP}."
+        add_repository
+        _install_"${HASHI_APP}"
+        exit 0
+    elif [ $# -le 2 ]; then
+        log "FATAL" "No argument options passed for: '${1} ${2}'."
+    fi
+
+    # Boolean argument defaults
+    BOOTSTRAP=0
+    CONFIGURE_RESOLVED=0
+    GEN_ROOT_TOKEN=0
+    INSTALL_CNI=1
+
+    # Default argument values
+    MODE="client"
+
+    GETOPT_ARGS="bootstrap,bootstrap-expect:,configure-resolved,datacenter:,mode:,net-interface:,retry-join:,\
+consul-encryption-token:,consul-master-token:,consul-default-token:,consul-nomad-token:,\
+nomad-encryption-token:,nomad-vault-token:,vault-root-token:,install-cni,\
+consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
+    readonly GETOPT_ARGS
+    if ! OPTS=$(getopt -l "${GETOPT_ARGS}" -a -- "$@" 2>/tmp/hashistack-err); then
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+    eval set -- "$OPTS"
+
+    while true; do
+        log "DEBUG" "Parsing argument: $1=$2"
+        case "$1" in
+            --bootstrap)
+                BOOTSTRAP=1
+                shift
+                ;;
+            --configure-resolved)
+                CONFIGURE_RESOLVED=1
+                shift
+                ;;
+            --bootstrap-expect)
+                BOOTSTRAP_EXPECT="${2}"
+                shift 2
+                ;;
+            --datacenter)
+                DATACENTER="${2}"
+                shift 2
+                ;;
+            --mode)
+                case "$2" in
+                    'server'|'client')
+                        MODE="$2"
+                        ;;
+                    *)
+                        log "WARN" "Invalid --mode '$2', defaulting to 'client'."
+                        MODE="client"
+                        ;;
+                esac
+                shift 2
+                ;;
+            --net-interface)
+                NET_IFACE="$2"
+                shift 2
+                ;;
+            --retry-join)
+                RETRY_JOIN="$2"
+                shift 2
+                ;;
+            --consul-encryption-token)
+                CONSUL_ENCRYPT_TOKEN="$2"
+                shift 2
+                ;;
+            --consul-master-token)
+                CONSUL_MASTER_TOKEN="$2"
+                shift 2
+                ;;
+            --consul-default-token)
+                CONSUL_DEFAULT_TOKEN="$2"
+                shift 2
+                ;;
+            --consul-nomad-token)
+                CONSUL_NOMAD_TOKEN="$2"
+                shift 2
+                ;;
+            --consul-vault-token)
+                CONSUL_VAULT_TOKEN="$2"
+                shift 2
+                ;;
+            --install-cni)
+                INSTALL_CNI=1
+                shift
+                ;;
+            --nomad-encryption-token)
+                NOMAD_ENCRYPT_TOKEN="$2"
+                shift 2
+                ;;
+            --nomad-vault-token)
+                NOMAD_VAULT_TOKEN="$2"
+                shift 2
+                ;;
+            --vault-root-token)
+                VAULT_ROOT_TOKEN="$2"
+                shift 2
+                ;;
+            --vault-kms-key)
+                VAULT_KMS_KEY="$2"
+                shift 2
+                ;;
+            --consul-address)
+                CONSUL_ADDRESS="$2"
+                shift 2
+                ;;
+            --generate-root-token)
+                GEN_ROOT_TOKEN=1
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+        esac
+    done
+
+    if [ -z "${DATACENTER+x}" ]; then
+        log "FATAL" "Required argument --datacenter not defined."
+    fi
+
+    if [ -z "${NET_IFACE+x}" ] || [ "${NET_IFACE}" = "" ]; then
+        log "WARN" "No --network-interface defined, will use the default interface."
+        NET_IFACE="$(ip route show | grep '^default' | grep -o 'dev .*' | awk '{print $2}')"
+        if [ "${NET_IFACE}" = "" ]; then
+            log "FATAL" "No default network interface found. Pass --network-interface manually."
+        fi
+    elif ! ip a show "${NET_IFACE}" up 2>/tmp/hashistack-err; then
+        log "ERROR" "Could not verify if the specified network interface is up:"
+        log "FATAL" "$(cat /tmp/hashistack-err)"
+    fi
+    log "INFO" "Using network interface: ${NET_IFACE}."
+
+    if [ "$BOOTSTRAP" -eq "1" ] && [ "$MODE" = "client" ]; then
+        log "WARN" "Cannot bootstrap with --mode=client."
+        BOOTSTRAP=0
+        log "DEBUG" "Disabled bootstrap."
+    fi
+
+    log "DEBUG" "Configuring ${HASHI_APP}."
+    _configure_"${HASHI_APP}"
+
+    if [ "${CONFIGURE_RESOLVED}" -eq "1" ]; then
+        _configure_resolved
+    fi
+
+    log "DEBUG" "Finished configuration."
+    exit 0
+}
+
+log "DEBUG" "Running $executable from $curdir"
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+# check_root
+# check_system
+# detect_architecture
+
+setup "$@"

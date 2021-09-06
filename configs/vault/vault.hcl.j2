@@ -1,0 +1,26 @@
+ui = true
+api_addr = "http://{{ bind_address }}:8200"
+cluster_addr = "http://{{ bind_address }}:8201"
+
+#mlock = true
+#disable_mlock = true
+
+storage "consul" {
+  address = "{{ bind_address }}:8500"
+  path    = "vault"
+  token   = "{{ consul_vault_token }}"
+}
+
+# HTTP listener
+listener "tcp" {
+  address = "{{ bind_address }}:8200"
+  cluster_address = "{{ bind_address }}:8201"
+  tls_disable = 1
+}
+
+{% if kms_key_id %}
+seal "awskms" {
+  region = "ap-south-1"
+  kms_key_id = "{{ kms_key_id }}"
+}
+{% endif %}

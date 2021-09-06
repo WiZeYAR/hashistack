@@ -1,0 +1,45 @@
+datacenter  = "{{ datacenter }}"
+data_dir    = "/opt/consul"
+{% if consul_instance == 'server' %}
+server           = true
+bootstrap_expect = {{ bootstrap_expect }}
+{% endif %}
+
+bind_addr   = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+client_addr = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+retry_join  = ["{{ retry_join }}"]
+
+encrypt          = "{{ encryption_token }}"
+
+acl {
+  enabled = true
+  default_policy = "deny"
+  enable_token_persistence = true
+  {% if master_acl_token or default_acl_token -%}
+  tokens {
+    {% if master_acl_token -%}
+    "master" = "{{ master_acl_token }}"
+    {% endif -%}
+    {% if default_acl_token -%}
+    "default" = "{{ default_acl_token }}"
+    {% endif -%}
+  }
+  {% endif %}
+}
+
+connect {
+  enabled = true
+}
+
+performance {
+  raft_multiplier = 1
+}
+
+ports {
+  grpc = 8502
+  dns  = 53
+}
+
+ui_config {
+  enabled = true
+}
