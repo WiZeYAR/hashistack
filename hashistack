@@ -465,15 +465,29 @@ EOF
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "INFO" "No Vault root token found. Attempting to generate."
             export VAULT_ADDR="http://${VAULT_BIND_ADDRESS}:8200"
-            if ! VAULT_ROOT=$(vault operator init 2>/tmp/hashistack-err); then
-                log "ERROR" "Failed to generate Vault root token."
-                log "FATAL" "$(cat /tmp/hashistack-err)"
-            fi
+            RETRIES=0
+            while [ "$RETRIES" -le "5" ]; do
+                if ! BOOTSTRAP_TOKEN=$(vault operator init 2>/tmp/hashistack-err); then
+                    BOOTSTRAP_ERR=$(cat /tmp/hashistack-err)
+                    if [[ "$BOOTSTRAP_ERR" == *"connection refused"* ]]; then
+                        log "DEBUG" "Waiting for Vault API to be available."
+                        RETRIES=$((RETRIES+1))
+                        sleep 5
+                    else
+                        log "ERROR" "Failed to bootstrap VAULT ACL."
+                        log "FATAL" "$BOOTSTRAP_ERR"
+                    fi
+                else
+                    break
+                fi
+            done
 
-            if [ -n "${VAULT_ROOT}" ]; then
+            if [ -n "${BOOTSTRAP_TOKEN+x}" ]; then
                 log "INFO" "Bootstrapped Vault instance:"
-                echo -e "${VAULT_ROOT}"
+                echo -e "${BOOTSTRAP_TOKEN}"
             fi
+        else
+            log "INFO" "VAULT_ROOT_TOKEN is already defined. Skipping."
         fi
     fi
 }
