@@ -209,7 +209,7 @@ __install_app() {
 
     if [ "$SKIPINSTALL" -eq 0 ]; then
         log "INFO" "Newer version of ${1} is defined in the script. Installing."
-        if ! apt install "${1}=${!APPVER}" 2>/tmp/hashistack-err; then
+        if ! apt install "${1}=${!APPVER}" 1>/dev/null 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
     fi
@@ -285,8 +285,9 @@ EOF
     chmod 0644 ${consul_config_file}
 
     log "INFO" "Validating Consul configuration: ${consul_config_file}"
-    if ! consul validate ${consul_config_file}; then
-        log "FATAL" "Failed to validate Consul configuration. Exiting."
+    if ! consul validate ${consul_config_file} 1>/dev/null 2>/tmp/hashistack-err; then
+        log "ERROR" "Failed to validate Consul configuration. Exiting."
+        log "FATAL" "$(cat /tmp/hashistack-err)"
     fi
     log "INFO" "Consul configuration is valid."
     return 0
@@ -468,12 +469,12 @@ EOF
                 log "ERROR" "Failed to generate Vault root token."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
             fi
-        fi
-    fi
 
-    if [ -n "${VAULT_ROOT}" ]; then
-        log "INFO" "Bootstrapped Vault instance:"
-        echo -e "${VAULT_ROOT}"
+            if [ -n "${VAULT_ROOT}" ]; then
+                log "INFO" "Bootstrapped Vault instance:"
+                echo -e "${VAULT_ROOT}"
+            fi
+        fi
     fi
 }
 
@@ -665,7 +666,9 @@ consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
     eval set -- "$OPTS"
 
     while true; do
-        log "DEBUG" "Parsing argument: $1=$2"
+        if [ "$1" != "--" ]; then
+            log "DEBUG" "Parsing argument: $1=$2"
+        fi
         case "$1" in
             --bootstrap)
                 BOOTSTRAP=1
@@ -758,7 +761,7 @@ consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
         esac
     done
 
-    if [ -z "${DATACENTER+x}" ]; then
+    if [ -z "${DATACENTER+x}" ] && [ "$HASHI_APP" != "vault" ]; then
         log "FATAL" "Required argument --datacenter not defined."
     fi
 
@@ -774,7 +777,7 @@ consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
     fi
     log "INFO" "Using network interface: ${NET_IFACE}."
 
-    if [ "$BOOTSTRAP" -eq "1" ] && [ "$MODE" = "client" ]; then
+    if [ "$BOOTSTRAP" -eq "1" ] && [ "$MODE" = "client" ] && [ "$HASHI_APP" != "vault" ]; then
         log "WARN" "Cannot bootstrap with --mode=client."
         BOOTSTRAP=0
         log "DEBUG" "Disabled bootstrap."
