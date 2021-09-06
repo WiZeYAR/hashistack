@@ -2,14 +2,18 @@ datacenter  = "{{ datacenter }}"
 data_dir    = "/opt/consul"
 {% if consul_instance == 'server' %}
 server           = true
+{% if bootstrap_expect > 1 -%}
 bootstrap_expect = {{ bootstrap_expect }}
+{% endif %}
 {% endif %}
 
 bind_addr   = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
 client_addr = "{{ '{{' }} GetInterfaceIP \"{{ net_interface }}\" }}"
+{% if retry_join %}
 retry_join  = ["{{ retry_join }}"]
+{% endif %}
 
-encrypt          = "{{ encryption_token }}"
+encrypt = "{{ encryption_token }}"
 
 acl {
   enabled = true
