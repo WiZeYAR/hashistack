@@ -402,10 +402,10 @@ _configure_vault() {
             export CONSUL_HTTP_ADDR
 
             log "INFO" "Checking if Consul Vault ACL policy exists."
-            if ! consul acl policy read -name vault-policy -token="${CONSUL_MASTER_TOKEN}"; then
+            if ! consul acl policy read -name vault-policy -token="${CONSUL_MASTER_TOKEN}" &>/dev/null; then
                 log "INFO" "Consul Vault ACL policy does not exist. Creating."
                 curl -fsSL -o /tmp/consul-vault-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-vault-policy.hcl"
-                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=vault-policy -rules @consul-vault-policy.hcl 2>/tmp/hashistack-err); then
+                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=vault-policy -rules @consul-vault-policy.hcl 1>/dev/null 2>/tmp/hashistack-err); then
                     log "ERROR" "Failed to create Consul Vault ACL policy."
                     log "FATAL" "$(cat /tmp/hashistack-err)"
                 fi
