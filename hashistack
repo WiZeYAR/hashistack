@@ -323,7 +323,7 @@ _configure_consul() {
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
         log "DEBUG" "Restarted Consul systemd service."
-        if check_connection "8500"; then
+        if ! check_connection "8500"; then
             log "FATAL" "Consul service is not up. Exiting."
         fi
         log "INFO" "Consul service is up."
@@ -388,7 +388,7 @@ _configure_consul() {
 
 _configure_vault() {
     if [ "$BOOTSTRAP" -eq "1" ]; then
-        if [ -z "${CONSUL_ADDRESS+x}" ] && check_connection "8500"; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
             log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
         elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
             log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Vault ACL."
@@ -454,7 +454,7 @@ EOF
         log "FATAL" "$(cat /tmp/hashistack-err)"
     fi
     log "DEBUG" "Restarted Vault systemd service."
-    if check_connection "8200"; then
+    if ! check_connection "8200"; then
         log "FATAL" "Vault service is not up. Exiting."
     fi
     log "INFO" "Vault service is up."
@@ -480,7 +480,7 @@ EOF
 
 _configure_nomad() {
     if [ "$BOOTSTRAP" -eq "1" ]; then
-        if [ -z "${CONSUL_ADDRESS+x}" ] && check_connection "8500"; then
+        if [ -z "${CONSUL_ADDRESS+x}" ] && ! check_connection "8500"; then
             log "ERROR" "Consul service is not up. Cannot bootstrap without Consul."
         elif [ -z "${CONSUL_MASTER_TOKEN+x}" ]; then
             log "ERROR" "Consul Master ACL Token is not defined. Cannot bootstrap Nomad ACL."
@@ -514,7 +514,7 @@ _configure_nomad() {
             log "DEBUG" "Consul ACL Nomad token: ${CONSUL_NOMAD_TOKEN}."
         fi
 
-        if [ -z "${VAULT_ADDRESS+x}" ] && check_connection "8200"; then
+        if [ -z "${VAULT_ADDRESS+x}" ] && ! check_connection "8200"; then
             log "ERROR" "Vault service is not up. Cannot bootstrap without Vault."
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "ERROR" "Vault root token is not defined. Cannot bootstrap Nomad Vault token."
@@ -594,14 +594,14 @@ EOF
         log "FATAL" "$(cat /tmp/hashistack-err)"
     fi
     log "DEBUG" "Restarted Nomad systemd service."
-    if check_connection "4646"; then
+    if ! check_connection "4646"; then
         log "FATAL" "Nomad service is not up. Exiting."
     fi
     log "INFO" "Nomad service is up."
 }
 
 _configure_resolved() {
-    if check_connection "8500"; then
+    if ! check_connection "8500"; then
         log "ERROR" "Consul service is not up. No point configuring systemd-resolved."
     else
         log "INFO" "Configuring systemd-resolved."
