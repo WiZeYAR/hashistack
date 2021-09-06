@@ -535,7 +535,7 @@ _configure_nomad() {
                 log "ERROR" "Failed to create Vault Nomad Policy."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
             fi
-            if ! (cd /tmp && vault write /auth/token/roles/nomad-cluster @nomad-cluster-role.json 2>/tmp/hashistack-err); then
+            if ! (cd /tmp && vault write /auth/token/roles/nomad-cluster @nomad-cluster-role.json 1>/dev/null 2>/tmp/hashistack-err); then
                 log "ERROR" "Failed to create Nomad Vault Role."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
             fi
