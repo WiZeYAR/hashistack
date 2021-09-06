@@ -76,11 +76,10 @@ setup_colors() {
 setup_colors
 
 _msg () {
-    if [ "$verbose" -eq "1" ]; then
-        IFS=" " read -r -a stack <<< "$(caller "$1")"
-        local type="$2"
-        local log="$3"
+    IFS=" " read -r -a stack <<< "$(caller "$1")"
+    local type="$2" log="$3"
 
+    if [ "$verbose" -eq "1" ]; then
         printf "%21s %-25s %-6b %b\n" "[$(date +"%F %T")]" "[${stack[1]}:${stack[0]}]" "${type}:" "${log}" >&2
     else
         printf "%21s %-6b %b\n" "[$(date +"%F %T")]" "${type}:" "${log}" >&2
