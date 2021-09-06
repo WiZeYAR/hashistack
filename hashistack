@@ -430,7 +430,7 @@ _configure_vault() {
         log "WARN" "Vault AWS KMS key is not defined."
     fi
 
-    VAULT_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
+    VAULT_BIND_ADDRESS="$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
     curl -fsSL -o /tmp/vault.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/vault/vault.hcl.j2"
     log "INFO" "Done. Generating template."
 
