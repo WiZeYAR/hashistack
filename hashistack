@@ -5,8 +5,9 @@ set -Eeuo pipefail
 
 curdir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
 debug=${DEBUG:-0}
+verbose=${VERBOSE:-0}
 executable="$(basename "${BASH_SOURCE[0]}")"
-readonly curdir debug executable
+readonly curdir debug executable verbose
 
 # Variables
 CONSUL_VERSION=${CONSUL_VERSION:-"1.10.2"}
@@ -34,9 +35,9 @@ ${GREEN}help:${NOFMT}      Show this dialogue and exit.
 Parameters (Configure):
 
 ${RED}Common (Required by ${GREEN}install${RED}):${NOFMT}
+--bootstrap                 Uses the current instance as a bootstrap server. Sets up encryption token and ACLs unless overridden.
 --bootstrap-expect=<int>    Number of servers to expect. Ignored if --mode is not set to server.
 --datacenter=<string>       Datacenter to configure the hashistack application in.
---install-cni               Whether the Nomad CNI plugin needs to be installed. Only for installing Nomad, ignored otherwise.
 --mode=[server|client] Set up the current instance in Server or Client mode. Consul can only be set up in server or client mode. This option is ignored by Vault.
 --net-interface=<interface> Network Interface name to use for Consul/Nomad go-socketaddr. If not specified, the default interface is used.
 --retry-join=<string>       go-discover compatible string for list of servers to join.
@@ -46,7 +47,6 @@ ${RED}Common (Required by ${GREEN}install${RED}):${NOFMT}
 In addition to the common parameters, the following parameters are required by ${GREEN}configure${NOFMT}:
 
 ${YELLOW}Consul:${NOFMT}
---bootstrap                 Uses the current Consul instance as a bootstrap server. Sets up encryption token and ACLs unless overridden.
 --consul-encryption-token   Encryption token for Consul RAFT protocol.
 --consul-master-token       Master ACL token for Consul. Ignored by --bootstrap.
 --consul-default-token      Default ACL token for Consul DNS. Ignored by --bootstrap.
@@ -56,6 +56,7 @@ ${YELLOW}Nomad:${NOFMT}
 --nomad-encryption-token    Encryption token for Nomad RAFT protocol. Generated during configure if not specified.
 --nomad-vault-token         Nomad token for Vault ACL. Generated during configure if not specified (Requires --vault-root-token).
 --vault-root-token          Required if --nomad-vault-token is not specified during Nomad configure.
+--install-cni               Whether the Nomad CNI plugin needs to be installed.
 
 ${YELLOW}Vault:${NOFMT}
 --consul-vault-token        Vault token for Consul ACL. Generated during configure if not specified (Requires --consul-master-token).
@@ -67,19 +68,23 @@ ${YELLOW}Vault:${NOFMT}
 
 setup_colors() {
   if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
-    NOFMT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m'
+    NOFMT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' BLUE='\033[1;34m'
   else
-    NOFMT='' RED='' GREEN='' YELLOW=''
+    NOFMT='' RED='' GREEN='' YELLOW='' BLUE=''
   fi
 }
 setup_colors
 
 _msg () {
-    IFS=" " read -r -a stack <<< "$(caller "$1")"
-    local type="$2"
-    local log="$3"
+    if [ "$verbose" -eq "1" ]; then
+        IFS=" " read -r -a stack <<< "$(caller "$1")"
+        local type="$2"
+        local log="$3"
 
-    echo -e "[$(date +"%F %T")] [${stack[1]}:${stack[0]}] ${type}: ${log}" >&2
+        printf "%21s %-25s %-6b %b\n" "[$(date +"%F %T")]" "[${stack[1]}:${stack[0]}]" "${type}:" "${log}" >&2
+    else
+        printf "%21s %-6b %b\n" "[$(date +"%F %T")]" "${type}:" "${log}" >&2
+    fi
 }
 
 log() {
@@ -92,7 +97,7 @@ log() {
             fi
             ;;
         'INFO')
-            _msg 1 "$1" "${msg}"
+            _msg 1 "${BLUE}$1${NOFMT}" "${msg}"
             ;;
         'WARN')
             _msg 1 "${YELLOW}$1${NOFMT}" "${msg}"
@@ -199,7 +204,7 @@ __install_app() {
     log "DEBUG" "Script ${1} version: ${!APPVER}"
     if command -v "${1}" &>/dev/null; then
         log "INFO" "${1} is already installed. Will try to upgrade."
-        CURVER=$(${1} --version | grep -Po '\d+.\d+.\d+')
+        CURVER=$(${1} --version | grep -Po '([0-9]+([.][0-9]+)+)')
         log "DEBUG" "Installed ${1} version: ${CURVER}."
         if ! (compare_version "${!APPVER}" "$CURVER"); then
             log "INFO" "Latest ${1} is already installed (v${CURVER}). Skipping."
@@ -239,7 +244,7 @@ _install_vault() {
     log "INFO" "Successfully installed Vault!"
 }
 
-__generate_consul_configuration() {
+__gen_consul_conf() {
     log "INFO" "Downloading Consul configuration template."
     curl -fsSL -o /tmp/consul.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul.hcl.j2"
     log "INFO" "Done. Generating template."
@@ -294,7 +299,7 @@ _configure_consul() {
             log "WARN" "No Consul ACL Default token defined."
         fi
     fi
-    __generate_consul_configuration
+    __gen_consul_conf
 
     if [ "$BOOTSTRAP" -eq "1" ]; then
         log "INFO" "Bootstrap enabled. Will configure encryption token and ACLs."
@@ -356,7 +361,7 @@ _configure_consul() {
         log "DEBUG" "Consul ACL Default token: ${CONSUL_DEFAULT_TOKEN}."
 
         log "INFO" "Regenerating Consul Configuration with ACL."
-        __generate_consul_configuration
+        __gen_consul_conf
     fi
 
     if [ -n "${CONSUL_MASTER_TOKEN+x}" ] && [ -n "${CONSUL_DEFAULT_TOKEN+x}" ]; then
@@ -488,10 +493,10 @@ _configure_nomad() {
             export CONSUL_HTTP_ADDR
 
             log "INFO" "Checking if Consul Nomad ACL policy exists."
-            if ! consul acl policy read -name nomad-policy -token="${CONSUL_MASTER_TOKEN}"; then
+            if ! consul acl policy read -name nomad-policy -token="${CONSUL_MASTER_TOKEN}" &>/dev/null; then
                 log "INFO" "Consul Nomad ACL policy does not exist. Creating."
                 curl -fsSL -o /tmp/consul-nomad-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-nomad-policy.hcl"
-                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=nomad-policy -rules @consul-nomad-policy.hcl 2>/tmp/hashistack-err); then
+                if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=nomad-policy -rules @consul-nomad-policy.hcl 1>/dev/null 2>/tmp/hashistack-err); then
                     log "ERROR" "Failed to create Consul Nomad ACL policy."
                     log "FATAL" "$(cat /tmp/hashistack-err)"
                 fi
@@ -512,11 +517,11 @@ _configure_nomad() {
             log "ERROR" "Vault service is not up. Cannot bootstrap without Vault."
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
             log "ERROR" "Vault root token is not defined. Cannot bootstrap Nomad Vault token."
-        elif [ -n "${NOMAD_VAULT_TOKEN}" ]; then
+        elif [ -n "${NOMAD_VAULT_TOKEN+x}" ]; then
             log "INFO" "Nomad Vault token already defined. Skipping Vault bootstrap."
         else
             log "INFO" "Vault service is up. Bootstrapping Nomad Vault token."
-            if [ -n "${VAULT_ADDRESS}" ] && [[ "${VAULT_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [ -n "${VAULT_ADDRESS+x}" ] && [[ "${VAULT_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 VAULT_ADDR="${VAULT_ADDRESS}:8200"
             else
                 VAULT_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8200"
@@ -527,7 +532,7 @@ _configure_nomad() {
             log "INFO" "Creating Vault Nomad Policy."
             curl -fsSL https://nomadproject.io/data/vault/nomad-server-policy.hcl -o /tmp/nomad-server-policy.hcl
             curl -fsSL https://nomadproject.io/data/vault/nomad-cluster-role.json -o /tmp/nomad-cluster-role.json
-            if ! (cd /tmp && vault policy write nomad-server nomad-server-policy.hcl 2>/tmp/hashistack-err); then
+            if ! (cd /tmp && vault policy write nomad-server nomad-server-policy.hcl 1>/dev/null 2>/tmp/hashistack-err); then
                 log "ERROR" "Failed to create Vault Nomad Policy."
                 log "FATAL" "$(cat /tmp/hashistack-err)"
             fi
@@ -571,7 +576,7 @@ _configure_nomad() {
     "bootstrap_expect": "${BOOTSTRAP_EXPECT}",
     "encryption_token": "${NOMAD_ENCRYPT_TOKEN}",
     "vault_token": "${NOMAD_VAULT_TOKEN:-}",
-    "retry_join": "${RETRY_JOIN}",
+    "retry_join": "${RETRY_JOIN:-}",
     "vault_addr": "${VAULT_ADDR}"
 }
 EOF
@@ -631,7 +636,7 @@ EOF
 }
 
 setup() {
-    log "DEBUG" "Parsing Arguments."
+    log "DEBUG" "Parsing arguments."
 
     case "${1}" in
         'install'|'configure')
@@ -681,7 +686,7 @@ consul-vault-token:,vault-kms-key:,consul-address:,generate-root-token"
 
     while true; do
         if [ "$1" != "--" ]; then
-            log "DEBUG" "Parsing argument: $1=$2"
+            log "DEBUG" "Parsing argument: $([ "$2" = "--" ] && echo "$1=1" || echo "$1=$2")"
         fi
         case "$1" in
             --bootstrap)
