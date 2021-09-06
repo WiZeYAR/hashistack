@@ -255,7 +255,6 @@ _install_vault() {
 
 __generate_consul_configuration() {
     log "INFO" "Downloading Consul configuration template."
-    # TODO: setup consul configuration URL
     curl -fsSL -o /tmp/consul.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul.hcl.j2"
     log "INFO" "Done. Generating template."
 
@@ -338,7 +337,6 @@ _configure_consul() {
         log "INFO" "Checking if Consul DNS ACL policy exists."
         if ! consul acl policy read -name dns-policy -token="${CONSUL_MASTER_TOKEN}"; then
             log "INFO" "Consul DNS ACL policy does not exist. Creating."
-            # TODO: Replace URL
             curl -fsSL -o /tmp/consul-dns-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-dns-policy.hcl"
             if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=dns-policy -rules @consul-dns-policy.hcl 2>/tmp/hashistack-err); then
                 log "ERROR" "Failed to create Consul DNS ACL policy."
@@ -385,7 +383,6 @@ _configure_vault() {
             log "INFO" "Checking if Consul Vault ACL policy exists."
             if ! consul acl policy read -name vault-policy -token="${CONSUL_MASTER_TOKEN}"; then
                 log "INFO" "Consul Vault ACL policy does not exist. Creating."
-                # TODO: Replace URL
                 curl -fsSL -o /tmp/consul-vault-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-vault-policy.hcl"
                 if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=vault-policy -rules @consul-vault-policy.hcl 2>/tmp/hashistack-err); then
                     log "ERROR" "Failed to create Consul Vault ACL policy."
@@ -413,7 +410,6 @@ _configure_vault() {
     fi
 
     VAULT_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
-    # TODO: setup vault configuration URL
     curl -fsSL -o /tmp/vault.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/vault/vault.hcl.j2"
     log "INFO" "Done. Generating template."
 
@@ -479,7 +475,6 @@ _configure_nomad() {
             log "INFO" "Checking if Consul Nomad ACL policy exists."
             if ! consul acl policy read -name nomad-policy -token="${CONSUL_MASTER_TOKEN}"; then
                 log "INFO" "Consul Nomad ACL policy does not exist. Creating."
-                # TODO: Replace URL
                 curl -fsSL -o /tmp/consul-nomad-policy.hcl "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/consul/consul-nomad-policy.hcl"
                 if ! (cd /tmp && consul acl policy create -token="${CONSUL_MASTER_TOKEN}" -name=nomad-policy -rules @consul-nomad-policy.hcl 2>/tmp/hashistack-err); then
                     log "ERROR" "Failed to create Consul Nomad ACL policy."
@@ -549,7 +544,6 @@ _configure_nomad() {
 
     CONSUL_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
 
-    # TODO: setup nomad configuration URL
     curl -fsSL -o /tmp/nomad.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/nomad/nomad.hcl.j2"
 
     cat > /tmp/nomad-config.json <<EOF
@@ -786,8 +780,8 @@ if [ $# -eq 0 ]; then
     usage
 fi
 
-# check_root
-# check_system
-# detect_architecture
+check_root
+detect_architecture
+check_system
 
 setup "$@"
