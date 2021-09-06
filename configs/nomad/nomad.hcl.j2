@@ -17,13 +17,13 @@ consul {
   address = "{{ consul_bind_address }}:8500"
 }
 
-{% if nomad_instance == 'server' %}
+{% if nomad_instance == 'server' -%}
 server {
   enabled = true
   bootstrap_expect = {{ bootstrap_expect }}
   encrypt = "{{ encryption_token }}"
 }
-{% else %}
+{% else -%}
 client {
   enabled = true
 }
@@ -63,4 +63,4 @@ vault {
   create_from_role = "nomad-cluster"
   token = "{{ vault_token }}"
 }
-{% endif %}
+{% endif -%}
