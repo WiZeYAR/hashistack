@@ -26,7 +26,7 @@ vault_config_file="${vault_config_dir}/vault.hcl"
 
 usage() {
     echo -e "
-Usage: ${executable} ${GREEN}[install | configure | help]${NOFMT} ${YELLOW}[consul | nomad | vault]${NOFMT} <params>
+Usage: ${executable} ${GREEN}[install | configure | help]${NOFMT} ${YELLOW}[consul | nomad | vault]${NOFMT} [PARAMS]
 
 ${GREEN}install:${NOFMT}   Installs the specifed hashistack application.
 ${GREEN}configure:${NOFMT} Configures the specifed hashistack application.
@@ -60,7 +60,7 @@ ${YELLOW}Nomad:${NOFMT}
 
 ${YELLOW}Vault:${NOFMT}
 --consul-vault-token        Vault token for Consul ACL. Generated during configure if not specified (Requires --consul-master-token).
---generate-root-token       Whether Vault root token needs to be generated.
+--generate-root-token       Whether Vault root token needs to be generated. Requires --bootstrap.
 --vault-kms-key             AWS KMS Key ID for Vault.
 "
     exit 0
