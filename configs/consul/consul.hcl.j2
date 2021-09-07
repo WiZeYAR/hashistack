@@ -20,7 +20,7 @@ acl {
   {% if master_acl_token or default_acl_token -%}
   tokens {
     {% if master_acl_token -%}
-    "master" = "{{ master_acl_token }}"
+    "agent" = "{{ master_acl_token }}"
     {% endif -%}
     {% if default_acl_token -%}
     "default" = "{{ default_acl_token }}"
