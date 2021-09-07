@@ -147,7 +147,7 @@ check_system() {
         if ! command -v pip3 &>/dev/null; then
             log "FATAL" "Package python3-pip is not installed."
         fi
-        if ! pip3 install --user --upgrade j2cli 2>/tmp/hashistack-err; then
+        if ! pip3 install --user --upgrade j2cli 1>/dev/null 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
         if ! command -v j2 &>/dev/null; then
@@ -626,7 +626,7 @@ _configure_resolved() {
         log "ERROR" "Consul service is not up. No point configuring systemd-resolved."
     else
         log "INFO" "Configuring systemd-resolved."
-        BIND_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
+        BIND_ADDR="$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
         log "DEBUG" "Setting up systemd-resolved DNS on IP: ${BIND_ADDR}."
         cat > /etc/systemd/resolved.conf <<EOF
 [Resolve]
