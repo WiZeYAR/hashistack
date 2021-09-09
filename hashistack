@@ -515,6 +515,7 @@ _configure_nomad() {
             log "DEBUG" "Consul ACL Nomad token: ${CONSUL_NOMAD_TOKEN}."
         fi
 
+        TEMP_VAULT=0
         if [ -z "${VAULT_ADDRESS+x}" ] && ! check_connection "8200"; then
             log "ERROR" "Vault service is not up. Cannot bootstrap without Vault."
         elif [ -z "${VAULT_ROOT_TOKEN+x}" ]; then
@@ -525,6 +526,11 @@ _configure_nomad() {
             log "INFO" "Vault service is up. Bootstrapping Nomad Vault token."
             if [ -n "${VAULT_ADDRESS+x}" ] && [[ "${VAULT_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 VAULT_ADDR="http://${VAULT_ADDRESS}:8200"
+                if ! command -v vault &>/dev/null; then
+                    log "WARN" "Vault is not installed on the current server. Installing temporarily."
+                    _install_vault
+                    TEMP_VAULT=1
+                fi
             else
                 VAULT_ADDR="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p'):8200"
             fi
@@ -619,6 +625,14 @@ EOF
         log "FATAL" "Nomad service is not up. Exiting."
     fi
     log "INFO" "Nomad service is up."
+
+    if [ "${TEMP_VAULT}" -eq "1" ]; then
+        log "INFO" "Removing temporarily installed Vault."
+        if ! apt remove vault 1>/dev/null 2>/tmp/hashistack-err; then
+            log "ERROR" "Failed to remove Vault."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+    fi
 }
 
 _configure_resolved() {
