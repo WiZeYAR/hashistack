@@ -216,7 +216,7 @@ __install_app() {
 
     if [ "$SKIPINSTALL" -eq 0 ]; then
         log "INFO" "Newer version of ${1} is defined in the script. Installing."
-        if ! apt install "${1}=${!APPVER}" 1>/dev/null 2>/tmp/hashistack-err; then
+        if ! apt install -y "${1}=${!APPVER}" 1>/dev/null 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
     fi
@@ -399,14 +399,16 @@ _configure_vault() {
                 log "INFO" "Created Consul Vault ACL policy."
             fi
 
-            log "INFO" "Generating Consul ACL Vault token."
-            if ! VAULT_TOKEN=$(consul acl token create -token="${CONSUL_MASTER_TOKEN}" -policy-name=vault-policy 2>/tmp/hashistack-err); then
-                log "ERROR" "Failed to generate Consul ACL Vault token."
-                log "FATAL" "$(cat /tmp/hashistack-err)"
+            if [ -z "${CONSUL_VAULT_TOKEN+x}" ]; then
+                log "INFO" "Generating Consul ACL Vault token."
+                if ! VAULT_TOKEN=$(consul acl token create -token="${CONSUL_MASTER_TOKEN}" -policy-name=vault-policy 2>/tmp/hashistack-err); then
+                    log "ERROR" "Failed to generate Consul ACL Vault token."
+                    log "FATAL" "$(cat /tmp/hashistack-err)"
+                fi
+                CONSUL_VAULT_TOKEN=$(echo -e "${VAULT_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
+                log "INFO" "Generated Consul ACL Vault token."
+                log "DEBUG" "Consul ACL Vault token: ${CONSUL_VAULT_TOKEN}."
             fi
-            CONSUL_VAULT_TOKEN=$(echo -e "${VAULT_TOKEN}" | grep "SecretID:" | awk -F ':' '{gsub(/^[ \t]+/, "", $2); gsub(/[ \t]+$/, "", $2); print $2}' | xargs echo -n)
-            log "INFO" "Generated Consul ACL Vault token."
-            log "DEBUG" "Consul ACL Vault token: ${CONSUL_VAULT_TOKEN}."
         fi
     fi
 
@@ -628,7 +630,7 @@ EOF
 
     if [ "${TEMP_VAULT}" -eq "1" ]; then
         log "INFO" "Removing temporarily installed Vault."
-        if ! apt remove vault 1>/dev/null 2>/tmp/hashistack-err; then
+        if ! apt remove -y vault 1>/dev/null 2>/tmp/hashistack-err; then
             log "ERROR" "Failed to remove Vault."
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
