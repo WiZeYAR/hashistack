@@ -602,7 +602,7 @@ _configure_nomad() {
     "consul_token": "${CONSUL_NOMAD_TOKEN}",
     "consul_bind_address": "${CONSUL_ADDRESS:-$CONSUL_BIND_ADDRESS}",
     "nomad_instance": "${MODE}",
-    "bootstrap_expect": "${BOOTSTRAP_EXPECT}",
+    "bootstrap_expect": "${BOOTSTRAP_EXPECT:-1}",
     "encryption_token": "${NOMAD_ENCRYPT_TOKEN}",
     "vault_token": "${NOMAD_VAULT_TOKEN:-}",
     "retry_join": "${RETRY_JOIN:-}",
