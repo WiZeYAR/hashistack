@@ -643,7 +643,7 @@ EOF
     fi
     log "INFO" "Nomad service is up."
 
-    if [ "${TEMP_VAULT}" -eq "1" ]; then
+    if [ -n "${TEMP_VAULT+x}" ] && [ "${TEMP_VAULT}" -eq "1" ]; then
         log "INFO" "Removing temporarily installed Vault."
         if ! apt remove -y vault 1>/dev/null 2>/tmp/hashistack-err; then
             log "ERROR" "Failed to remove Vault."
