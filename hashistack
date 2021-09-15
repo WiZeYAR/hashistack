@@ -585,6 +585,12 @@ _configure_nomad() {
         fi
     fi
 
+    if [ -z "${VAULT_ADDR+x}" ] && [ -n "${VAULT_ADDRESS+x}" ]; then
+        VAULT_ADDR="http://${VAULT_ADDRESS}:8200"
+    else
+        log "FATAL" "Vault address is unknown! Required: --vault-address=[IP]."
+    fi
+
     CONSUL_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
 
     curl -fsSL -o /tmp/nomad.hcl.j2 "https://git.deku.moe/thunderbottom/hashistack/raw/branch/master/configs/nomad/nomad.hcl.j2"
