@@ -200,6 +200,22 @@ check_connection() {
     lsof -i :"$1" -S &>/dev/null && return
 }
 
+service_up() {
+    if systemctl is-enabled --quiet "$1"; then
+        log "DEBUG" "Restarting systemd service : $1"
+        if ! systemctl restart "$1" 2>/tmp/hashistack-err; then
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+    elif ! systemctl is-active --quiet ; then
+        log "DEBUG" "Service $1 is not running. Starting service."
+        if ! systemctl start "$1" 1>/dev/null 2>/tmp/hashistack-err; then
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        log "DEBUG" "Started service: $1."
+    fi
+    log "INFO" "Service $1 is up."
+}
+
 __install_app() {
     local SKIPINSTALL=0
     local APPVER="${1^^}_VERSION"
@@ -305,11 +321,8 @@ _configure_consul() {
 
     if [ "$BOOTSTRAP" -eq "1" ]; then
         log "INFO" "Bootstrap enabled. Will configure encryption token and ACLs."
-        log "DEBUG" "Restarting Consul systemd service."
-        if ! systemctl restart consul 2>/tmp/hashistack-err; then
-            log "FATAL" "$(cat /tmp/hashistack-err)"
-        fi
-        log "DEBUG" "Restarted Consul systemd service."
+
+        service_up "consul"
         if ! check_connection "8500"; then
             log "FATAL" "Consul service is not up. Exiting."
         fi
@@ -438,15 +451,10 @@ EOF
     chown vault:vault "${vault_config_file}"
     chmod 0644 "${vault_config_file}"
 
-    log "DEBUG" "Restarting Vault systemd service."
-    if ! systemctl restart vault 2>/tmp/hashistack-err; then
-        log "FATAL" "$(cat /tmp/hashistack-err)"
-    fi
-    log "DEBUG" "Restarted Vault systemd service."
+    service_up "vault"
     if ! check_connection "8200"; then
         log "FATAL" "Vault service is not up. Exiting."
     fi
-    log "INFO" "Vault service is up."
 
     if [ "$BOOTSTRAP" -eq "1" ]; then
         if [ "$GEN_ROOT_TOKEN" -eq "0" ]; then
@@ -567,9 +575,11 @@ _configure_nomad() {
         log "WARN" "Nomad is being set up in client mode, but docker is not installed."
     fi
 
-    if ! NOMAD_ENCRYPT_TOKEN=$(nomad operator keygen 2>/tmp/hashistack-err); then
-        log "ERROR" "Failed to generate nomad encryption token. Generate manually by running nomad operator keygen."
-        log "FATAL" "$(cat /tmp/hashistack-err)"
+    if [ -z "${NOMAD_ENCRYPT_TOKEN+x}" ]; then
+        if ! NOMAD_ENCRYPT_TOKEN=$(nomad operator keygen 2>/tmp/hashistack-err); then
+            log "ERROR" "Failed to generate nomad encryption token. Generate manually by running nomad operator keygen."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
     fi
 
     CONSUL_BIND_ADDRESS="http://$(ip -f inet addr show "${NET_IFACE}" | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')"
@@ -618,11 +628,7 @@ EOF
         log "INFO" "Successfully setup CNI Plugins."
     fi
 
-    log "DEBUG" "Restarting Nomad systemd service."
-    if ! systemctl restart nomad 2>/tmp/hashistack-err; then
-        log "FATAL" "$(cat /tmp/hashistack-err)"
-    fi
-    log "DEBUG" "Restarted Nomad systemd service."
+    service_up "nomad"
     if ! check_connection "4646"; then
         log "FATAL" "Nomad service is not up. Exiting."
     fi
