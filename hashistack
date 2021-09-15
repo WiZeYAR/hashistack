@@ -178,14 +178,17 @@ detect_architecture() {
 }
 
 add_repository() {
-    log "INFO" "Setting up Hashicorp apt repository."
-    if ! curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add - 1>/dev/null 2>/tmp/hashistack-err; then
-        log "ERROR" "Failed to import Hashicorp apt repository GPG."
-        log "FATAL" "$(cat /tmp/hashistack-err)"
-    fi
-    if ! apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main" 1>/dev/null 2>/tmp/hashistack-err; then
-        log "ERROR" "Failed to add Hashicorp apt repository."
-        log "FATAL" "$(cat /tmp/hashistack-err)"
+    log "INFO" "Checking if Hashicorp apt repository exists."
+    if ! grep -rq "hashicorp" /etc/apt --include="*.list"; then
+        log "INFO" "Setting up Hashicorp apt repository."
+        if ! curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add - 1>/dev/null 2>/tmp/hashistack-err; then
+            log "ERROR" "Failed to import Hashicorp apt repository GPG."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
+        if ! apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main" 1>/dev/null 2>/tmp/hashistack-err; then
+            log "ERROR" "Failed to add Hashicorp apt repository."
+            log "FATAL" "$(cat /tmp/hashistack-err)"
+        fi
     fi
     log "INFO" "Running apt update."
     apt update &>/dev/null
