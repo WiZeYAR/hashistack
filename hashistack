@@ -209,7 +209,7 @@ service_up() {
         if ! systemctl restart "$1" 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
         fi
-    elif ! systemctl is-active --quiet ; then
+    elif ! systemctl is-active --quiet "$1"; then
         log "DEBUG" "Service $1 is not running. Starting service."
         if ! systemctl start "$1" 1>/dev/null 2>/tmp/hashistack-err; then
             log "FATAL" "$(cat /tmp/hashistack-err)"
